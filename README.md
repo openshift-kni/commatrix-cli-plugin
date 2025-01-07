@@ -1,1 +1,90 @@
-# commatrix-cli-plugin
+# `kubectl commatrix` Plugin
+---
+
+## Overview
+
+The `kubectl commatrix` plugin generates an up-to-date communication flows matrix for all ingress flows 
+of OpenShift (multi-node and single-node deployments) and Operators.
+
+For additional details, please refer to the [commatrix documentation](https://github.com/openshift-kni/commatrix/blob/main/README.md)
+
+
+## Installation
+
+### Prerequisites
+
+- Kubernetes CLI (`kubectl`) installed and configured to access your cluster.
+- Go installed for building the plugin, or download a pre-built binary (if available).
+
+---
+
+## Running
+build the code locally and install it in `/usr/local/bin`:
+```sh
+$ make build
+$ sudo make install
+
+# you can now begin using this plugin as a regular kubectl command:
+$ kubectl commatrix generate 
+```
+
+---
+
+## Usage
+```
+Usage:
+  commatrix generate [flags]
+
+Flags:
+      --customEntriesFormat string   Set the format of the custom entries file (json,yaml,csv)
+      --customEntriesPath string     Add custom entries from a file to the matrix
+      --debug                        Debug logs
+      --format string                Desired format (json,yaml,csv,nft) (default "csv")
+```
+
+
+## Example Output
+
+Once you run the `kubectl commatrix generate` command, the plugin will
+generate a communication matrix based on the ingress flows in your
+OpenShift cluster. The output will be displayed in the chosen format,
+similar to the following:
+
+`csv example`
+```sh
+$ kubectl commatrix generate --format csv
+Direction,Protocol,Port,Namespace,Service,Pod,Container,Node Role,Optional
+Ingress,TCP,22,Host system service,sshd,,,master,true
+Ingress,TCP,53,openshift-dns,dns-default,dnf-default,dns,master,false
+Ingress,TCP,80,openshift-ingress,router-internal-default,router-default,router,master,false
+Ingress,TCP,111,Host system service,rpcbind,,,master,true
+```
+
+`json example`
+```sh
+$ kubectl commatrix generate --format json
+[
+    {
+        "direction": "Ingress",
+        "protocol": "TCP",
+        "port": 22,
+        "namespace": "Host system service",
+        "service": "sshd",
+        "pod": "",
+        "container": "",
+        "nodeRole": "master",
+        "optional": true
+    },
+    {
+        "direction": "Ingress",
+        "protocol": "TCP",
+        "port": 53,
+        "namespace": "openshift-dns",
+        "service": "dns-default",
+        "pod": "dnf-default",
+        "container": "dns",
+        "nodeRole": "master",
+        "optional": false
+    }
+]
+```

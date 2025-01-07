@@ -1,0 +1,6 @@
+kubectl-commatrix
+
+bin/
+vendor/
+.vscode/
+_output
