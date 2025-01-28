@@ -33,12 +33,12 @@ $ kubectl commatrix generate
 ## Usage
 ```
 Usage:
-  commatrix generate [flags]
+  kubectl commatrix generate [flags]
 
 Flags:
       --customEntriesFormat string   Set the format of the custom entries file (json,yaml,csv)
       --customEntriesPath string     Add custom entries from a file to the matrix
-      --debug                        Debug logs
+      --debug                        Debug logs (default is false)
       --format string                Desired format (json,yaml,csv,nft) (default "csv")
 ```
 

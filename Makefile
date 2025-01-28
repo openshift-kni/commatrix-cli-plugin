@@ -14,7 +14,7 @@ GOLANGCI_LINT = $(BIN_DIR)/golangci-lint
 GOLANGCI_LINT_VER = v1.62.2
 
 # Default locations for `make install`
-DESTDIR = /usr/local/bin
+INSTALL_DIR = /usr/local/bin
 
 .PHONY: build
 build:
@@ -24,7 +24,7 @@ build:
 # Install the plugin and completion script in /usr/local/bin
 .PHONY: install
 install:
-	install $(EXECUTABLE_DIR)/kubectl-commatrix $(DESTDIR)
+	install $(EXECUTABLE_DIR)/kubectl-commatrix $(INSTALL_DIR)
 
 deps-update:
 	go mod tidy

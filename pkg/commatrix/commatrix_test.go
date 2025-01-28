@@ -1,31 +1,42 @@
 package commatrix
 
 import (
-	"bytes"
-	"encoding/json"
-	"os"
+	"fmt"
+	"slices"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 
 	"github.com/golang/mock/gomock"
-	g "github.com/onsi/ginkgo/v2"
-	o "github.com/onsi/gomega"
-	mock_utils "github.com/openshift-kni/commatrix/pkg/utils/mock"
+	"github.com/openshift-kni/commatrix/pkg/client"
+	"github.com/openshift-kni/commatrix/pkg/types"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	"github.com/openshift-kni/commatrix/pkg/client"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"k8s.io/apimachinery/pkg/runtime"
+
+	configv1 "github.com/openshift/api/config/v1"
 	fakek "k8s.io/client-go/kubernetes/fake"
+
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 var (
-	clientset *client.ClientSet
-	mockUtils *mock_utils.MockUtilsInterface
-	ctrlTest  *gomock.Controller
-)
+	infra = &configv1.Infrastructure{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cluster",
+		},
+		Status: configv1.InfrastructureStatus{
+			ControlPlaneTopology: configv1.HighlyAvailableTopologyMode,
+			PlatformStatus: &configv1.PlatformStatus{
+				Type: configv1.AWSPlatformType,
+			},
+		},
+	}
 
-var (
 	testNode = &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-node",
@@ -110,93 +121,120 @@ var (
 			},
 		},
 	}
+
+	testEpsComDetails = []types.ComDetails{
+		{
+			Direction: "Ingress",
+			Protocol:  "TCP",
+			Port:      80,
+			Namespace: "test-ns",
+			Service:   "test-service",
+			Pod:       "test-app-pod",
+			Container: "test-container",
+			NodeRole:  "master",
+			Optional:  false,
+		},
+	}
 )
 
-var _ = g.Describe("Commatrix Tests", func() {
-	g.Context("Create utils and client Matrix", func() {
-		g.BeforeEach(func() {
-			sch := runtime.NewScheme()
+func TestCommatrixGeneration(t *testing.T) {
+	expectedComDetails := slices.Concat(testEpsComDetails, types.BaremetalStaticEntriesMaster, types.BaremetalStaticEntriesWorker,
+		types.GeneralStaticEntriesMaster, types.GeneralStaticEntriesWorker, types.StandardStaticEntries)
 
-			err := corev1.AddToScheme(sch)
-			o.Expect(err).NotTo(o.HaveOccurred())
-			err = discoveryv1.AddToScheme(sch)
-			o.Expect(err).NotTo(o.HaveOccurred())
+	expectedComMatrix := types.ComMatrix{Matrix: expectedComDetails}
+	expectedComMatrix.SortAndRemoveDuplicates()
 
-			fakeClient := fake.NewClientBuilder().WithScheme(sch).WithObjects(testNode, testPod, testService, testEndpointSlice).Build()
-			fakeClientset := fakek.NewSimpleClientset()
+	testCases := []struct {
+		name         string
+		args         []string
+		expectedFunc func() (string, error)
+		wantErr      bool
+	}{
+		{
+			name: "Should generate CSV output",
+			args: []string{"generate", "--format", "csv"},
+			expectedFunc: func() (string, error) {
+				expectedOutput, err := expectedComMatrix.ToCSV()
+				return string(expectedOutput), err
+			},
+			wantErr: false,
+		},
+		{
+			name: "Should generate JSON output",
+			args: []string{"generate", "--format", "json"},
+			expectedFunc: func() (string, error) {
+				expectedOutput, err := expectedComMatrix.ToJSON()
+				return string(expectedOutput), err
+			},
+			wantErr: false,
+		},
+		{
+			name: "Should Return failure on format validation",
+			args: []string{"generate", "--format", "test"},
+			expectedFunc: func() (string, error) {
+				return "", fmt.Errorf("invalid format 'test', valid options are: csv, json, yaml, nft")
+			},
+			wantErr: true,
+		},
+		{
+			name: "Should return failure when customEntriesPath is set but customEntriesFormat is missing",
+			args: []string{"generate", "--customEntriesPath", "/path/to/customEntriesFile"},
+			expectedFunc: func() (string, error) {
+				return "", fmt.Errorf("you must specify the --customEntriesFormat when using --customEntriesPath")
+			},
+			wantErr: true,
+		},
+		{
+			name: "Should return failure when customEntriesFormat not valid",
+			args: []string{"generate", "--customEntriesPath", "/path/to/customEntriesFile", "--customEntriesFormat", "invalid"},
+			expectedFunc: func() (string, error) {
+				return "", fmt.Errorf("invalid custom entries format")
+			},
+			wantErr: true,
+		},
+	}
+	sch := runtime.NewScheme()
+	t.Helper()
 
-			clientset = &client.ClientSet{
-				Client:          fakeClient,
-				CoreV1Interface: fakeClientset.CoreV1(),
+	err := corev1.AddToScheme(sch)
+	require.NoError(t, err)
+
+	err = discoveryv1.AddToScheme(sch)
+	require.NoError(t, err)
+
+	err = configv1.AddToScheme(sch)
+	require.NoError(t, err)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(sch).WithObjects(infra, testNode, testPod, testService, testEndpointSlice).Build()
+	fakeClientset := fakek.NewSimpleClientset()
+
+	clientset := &client.ClientSet{
+		Client:          fakeClient,
+		CoreV1Interface: fakeClientset.CoreV1(),
+	}
+
+	ctrlTest := gomock.NewController(t)
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			streams, _, out, errOut := genericiooptions.NewTestIOStreams()
+			cmdTest := NewCmd(clientset, streams)
+			cmdTest.SetArgs(tt.args)
+			err = cmdTest.Execute()
+
+			expectedOutput, expectedErr := tt.expectedFunc()
+			if tt.wantErr {
+				assert.Contains(t, errOut.String(), expectedOutput)
+				require.Error(t, err)
+				require.Error(t, expectedErr)
+			} else {
+				require.NoError(t, err)
+				require.NoError(t, expectedErr)
+				actualOutput := out.String()
+				assert.Equal(t, actualOutput, expectedOutput)
 			}
-
-			ctrlTest = gomock.NewController(g.GinkgoT())
-			mockUtils = mock_utils.NewMockUtilsInterface(ctrlTest)
-			mockUtils.EXPECT().IsBMInfra().Return(false, nil)
-			mockUtils.EXPECT().IsSNOCluster().Return(false, nil)
 		})
+	}
 
-		g.AfterEach(func() {
-			ctrlTest.Finish()
-		})
-
-		g.It("should create with csv format ", func() {
-			var outputBuffer bytes.Buffer
-			originalStdout := os.Stdout
-			r, w, _ := os.Pipe()
-			os.Stdout = w
-
-			options := &CommatrixOptions{
-				format:              "csv",
-				customEntriesPath:   "",
-				customEntriesFormat: "",
-				debug:               false,
-				cs:                  clientset,
-				utilsHelpers:        mockUtils,
-			}
-			err := options.Run()
-			o.Expect(err).NotTo(o.HaveOccurred())
-			w.Close()
-			os.Stdout = originalStdout
-			_, err = outputBuffer.ReadFrom(r)
-			o.Expect(err).NotTo(o.HaveOccurred())
-
-			expectedHeader := "Direction,Protocol,Port,Namespace,Service,Pod,Container,Node Role,Optional\n"
-			actualOutput := outputBuffer.String()
-			o.Expect(actualOutput).To(o.HavePrefix(expectedHeader))
-
-		})
-
-		g.It("should create with json format", func() {
-			var outputBuffer bytes.Buffer
-			originalStdout := os.Stdout
-			r, w, _ := os.Pipe()
-			os.Stdout = w
-
-			options := &CommatrixOptions{
-				format:              "json",
-				customEntriesPath:   "",
-				customEntriesFormat: "",
-				debug:               false,
-				cs:                  clientset,
-				utilsHelpers:        mockUtils,
-			}
-
-			err := options.Run()
-			o.Expect(err).NotTo(o.HaveOccurred())
-
-			w.Close()
-			os.Stdout = originalStdout
-			_, err = outputBuffer.ReadFrom(r)
-			o.Expect(err).NotTo(o.HaveOccurred())
-
-			actualOutput := outputBuffer.String()
-
-			var jsonOutput interface{}
-			err = json.Unmarshal([]byte(actualOutput), &jsonOutput)
-			o.Expect(err).NotTo(o.HaveOccurred(), "output is not valid JSON")
-
-		})
-	})
-
-})
+	ctrlTest.Finish()
+}

@@ -13,31 +13,30 @@ jobs:
     name: Run Linters and Vet
     runs-on: ubuntu-22.04
     env:
-      SHELL: /bin/bash
+      KUBECTL_VERSION: "v1.32.1"
+      KIND_VERSION: "v0.20.0"
+      KIND_NODE_IMAGE: "kindest/node:v1.27.3"
+      GO_VERSION: "1.23.1"
+      GOLANGCI_LINT_VERSION: "v1.60"
 
     steps:
-      - name: Set up Go 1.23
-        uses: actions/setup-go@v5  # Updated to use version tag instead of commit hash
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.23.1
+          go-version:  ${{ env.GO_VERSION }}
 
       - name: Disable default go problem matcher
         run: echo "::remove-matcher owner=go::"
 
       - name: Check out code
-        uses: actions/checkout@v4  # Updated to use version tag instead of commit hash
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
 
-      - name: Extract dependent Pull Requests
-        uses: depends-on/depends-on-action@main  # Using the latest stable release tag
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Golangci-lint
-        uses: golangci/golangci-lint-action@v6.1.0  # Version tag used consistently
+        uses: golangci/golangci-lint-action@v6.1.0
         with:
-          version: v1.60
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --timeout 10m0s
 
       - name: Make lint
@@ -45,3 +44,42 @@ jobs:
 
       - name: Run tests
         run: make test
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/
+
+      - name: Create Kind Cluster
+        run: |
+          kind create cluster --name test-cluster --image "${{ env.KIND_NODE_IMAGE }}"
+
+      - name: Set kubectl context for Kind cluster
+        run: |
+          kind get kubeconfig --name test-cluster > kubeconfig.yaml
+          export KUBECONFIG=kubeconfig.yaml
+          kubectl cluster-info --context kind-test-cluster
+
+      - name: Wait for Kind Cluster to Be Ready
+        run: |
+          kubectl wait --for=condition=Ready nodes --all --timeout=120s || echo "Waiting for nodes to be ready timed out."
+
+      - name: Build kubectl-commatrix
+        run: make build
+
+      - name: Install kubectl-commatrix
+        run: sudo make install
+
+      - name: Verify kubectl-commatrix Installation
+        run: |
+          kubectl commatrix generate --help
+
+      - name: generate commatrix with csv format
+        run: |
+          kubectl commatrix generate --format csv
